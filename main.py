@@ -286,11 +286,31 @@ async def helpcadastro(ctx):
         inline=False
     )
     embed.add_field(
+        name="🗑️ Como remover arma ou armadura",
+        value=(
+            "• `!remover arma \"Nome da Arma\"` — remove a arma do banco de dados do personagem (use aspas se necessário).\n"
+            "• `!remover armadura \"Nome da Armadura\"` — remove a armadura do banco de dados do personagem.\n"
+            "  • **Exemplo:** `!remover arma \"Espada Longa\"`"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="⬆️ Como upar arma e armadura (sem remover)",
+        value=(
+            "• `!upararma \"Nome da Arma\" nivel_inc d6_inc` — incrementa nível e d6 da arma (pode ser negativo).\n"
+            "  • **Exemplo:** `!upararma \"Espada Longa\" 1 1` — aumenta nível em 1 e d6 em 1.\n"
+            "• `!upararmadura \"Nome da Armadura\" nivel_inc d6_inc bonus_esq_inc bonus_vel_inc` — atualiza armadura existente.\n"
+            "  • **Exemplo:** `!upararmadura \"Couraça\" 1 0 2 0` — +1 nível, +0 d6, +2 Esquiva."
+        ),
+        inline=False
+    )
+    embed.add_field(
         name="🔎 Dicas importantes",
         value=(
             "• Use `!set [Nome]` após cadastrar para ativar o personagem.\n"
             "• `!ficha` mostra Vida, Estresse, Equipamento e Carteira.\n"
-            "• Para remover itens use `!remover arma \"Nome\"` ou `!remover armadura \"Nome\"`."
+            "• Atualizar (`upararma` / `upararmadura`) preserva histórico e evita recriar itens.\n"
+            "• Remoções e upgrades podem exigir permissão de Mestre/ADM dependendo da implementação."
         ),
         inline=False
     )
@@ -795,35 +815,60 @@ async def editar(ctx, atributo: str, *, novo_valor: str):
 # Rolagens e utilitários de teste
 # ----------------------------
 @bot.command()
-async def rolar(ctx, atributo: str):
+async def rolar(ctx, atributo: str, bonus: int = 0):
+    """
+    Rola um d20 contra um atributo com bônus temporário opcional.
+    Uso:
+      !rolar esquiva
+      !rolar esquiva 2   -> aplica +2 ao limite apenas nesta rolagem
+      !rolar forca -1    -> aplica -1 ao limite (penalidade temporária)
+    """
     ativo = get_ativo(ctx.author.id)
     if not ativo:
         return await ctx.send("❌ Use !set primeiro.")
-    mapa = {"forca": "forca", "velocidade": "velocidade", "esquiva": "esquiva", "constituicao": "constituicao", "atordoamento": "atordoamento", "peste": "peste", "doenca": "doencas", "sangramento": "sangramento", "debuff": "debuff"}
+    mapa = {
+        "forca": "forca", "velocidade": "velocidade", "esquiva": "esquiva",
+        "constituicao": "constituicao", "atordoamento": "atordoamento",
+        "peste": "peste", "doenca": "doencas", "sangramento": "sangramento", "debuff": "debuff"
+    }
     atr = atributo.lower()
     if atr not in mapa:
-        return await ctx.send("❌ Atributo inválido.")
+        return await ctx.send("❌ Atributo inválido. Use: forca, velocidade, esquiva, constituicao, atordoamento, peste, doenca, sangramento, debuff.")
     conn = sqlite3.connect(DB_FILE); cursor = conn.cursor()
     cursor.execute(f"SELECT {mapa[atr]} FROM fichas WHERE user_id = ? AND nome = ?", (str(ctx.author.id), ativo))
-    val = cursor.fetchone()[0]; conn.close()
+    row = cursor.fetchone()
+    conn.close()
+    val = (row[0] or 0) if row else 0
+
+    # rola d20
     dado = random.randint(1, 20)
+    limite_original = val
+    limite_efetivo = val + (bonus or 0)
+
+    # lógica de resultado (1 = crítico de sucesso, 20 = falha crítica)
     if dado == 1:
         titulo, cor = f"🌟 SUCESSO CRÍTICO em {atr.capitalize()}!", 0xffd700
-        if atr in ["velocidade", "esquiva"]:
-            frase = "🥷 **Você tirou 1! Uma dádiva dos ninjas!**"
+        # Mensagens especiais para críticos positivos por atributo
+        if atr == "esquiva":
+            frase = "Uma dádiva dos ninjas, você esquiva facilmente!"
         elif atr == "forca":
-            frase = "💪 **Você tirou 1! Biiirrlll aqui é bodybuilder porra!**"
-        elif atr == "constituicao":
-            frase = "🛡️ **Você tirou 1! Tu é brabo mesmo**"
+            frase = "Birrrll aqui é bodybuilder, porra!"
+        elif atr == "velocidade":
+            frase = "Zuuuummmm!"
         else:
-            frase = "✨ **Você tirou 1! Não fez nem cócegas!**"
+            frase = "🥷 **Sucesso absoluto!**"
     elif dado == 20:
-        titulo, cor, frase = "💀 FALHA CRÍTICA!", 0x000000, "☠️ **Xih... Você tirou 20. Se fodeu.**"
-    elif dado <= val:
+        titulo, cor, frase = "💀 FALHA CRÍTICA!", 0x000000, "Xih... Você tirou 20. Se fodeu."
+    elif dado <= limite_efetivo:
         titulo, cor, frase = "✅ SUCESSO!", 0x2ecc71, "Mandou bem!"
     else:
         titulo, cor, frase = "❌ FALHA!", 0xe74c3c, "Não foi dessa vez..."
-    emb = discord.Embed(title=titulo, color=cor, description=f"{frase}\n\n🎲 **Dado: {dado}** (Limite: {val})")
+
+    emb = discord.Embed(title=titulo, color=cor, description=frase)
+    emb.add_field(name="🎲 Dado (d20)", value=f"**{dado}**", inline=True)
+    emb.add_field(name="📏 Limite", value=f"**{limite_original}**", inline=True)
+    emb.add_field(name="➕ Bônus temporário", value=f"**{bonus}**", inline=True)
+    emb.add_field(name="📈 Limite efetivo", value=f"**{limite_efetivo}**", inline=False)
     emb.set_footer(text=f"Personagem: {ativo}")
     await ctx.send(embed=emb)
 
@@ -1221,6 +1266,218 @@ async def curou(ctx, valor: int):
     conn.commit(); conn.close()
     await ctx.send(f"✨ **{ativo}** recuperou **{valor}** de vida. Vida atual: **{nova_vida}/{max_hp}**")
 
+@bot.command(name="upararma")
+async def upararma(ctx, *args):
+    """
+    Atualiza arma existente. Formatos aceitos:
+      !upararma "Nome da Arma" nivel_inc d6_inc
+      !upararma @Jogador "Nome da Arma" nivel_inc d6_inc
+    Aceita nome entre aspas para suportar espaços.
+    """
+    if not args:
+        return await ctx.send("❌ Uso: `!upararma \"Nome\" nivel_inc d6_inc`")
+
+    # Detecta menção no conteúdo da mensagem (prioriza menção explícita)
+    membro = None
+    tokens = list(args)
+    if ctx.message.mentions:
+        membro = ctx.message.mentions[0]
+        # remove a primeira token correspondente à menção dos tokens
+        # (args já separa por espaços, então descartamos o primeiro token)
+        tokens = tokens[1:]
+
+    # Reconstrói nome entre aspas se necessário
+    if not tokens:
+        return await ctx.send("❌ Nome da arma não informado.")
+    if tokens[0].startswith('"') or tokens[0].startswith("'"):
+        quote = tokens[0][0]
+        nome_parts = []
+        consumed = 0
+        for t in tokens:
+            nome_parts.append(t)
+            consumed += 1
+            if t.endswith(quote) and len(t) > 1:
+                break
+        nome = " ".join(nome_parts).strip(quote).strip()
+        rest = tokens[consumed:]
+    else:
+        nome = tokens[0]
+        rest = tokens[1:]
+
+    # Se não houve menção, alvo é o autor
+    if membro is None:
+        membro = ctx.author
+    else:
+        # se tentou atualizar arma de outro, exige permissão de administrador
+        if membro != ctx.author and not ctx.author.guild_permissions.administrator:
+            return await ctx.send("🔒 Você não tem permissão para atualizar a arma de outro jogador.")
+
+    # Parse dos incrementos (preenche com zeros se faltarem)
+    try:
+        nivel_inc = int(rest[0]) if len(rest) >= 1 else 0
+        d6_inc = int(rest[1]) if len(rest) >= 2 else 0
+    except ValueError:
+        return await ctx.send("❌ Argumento inválido. Use números inteiros para os incrementos. Veja `!helpdados`.")
+
+    ativo = get_ativo(membro.id)
+    if not ativo:
+        return await ctx.send(f"❌ {membro.display_name} não tem um personagem ativo.")
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT nivel, d6 FROM armas WHERE user_id = ? AND nome_personagem = ? AND LOWER(item_nome) = ?",
+        (str(membro.id), ativo, nome.lower())
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return await ctx.send(f"❌ Arma **{nome}** não encontrada para o personagem **{ativo}** de {membro.display_name}.")
+
+    nivel_atual, d6_atual = row
+    novo_nivel = (nivel_atual or 0) + nivel_inc
+    novo_d6 = (d6_atual or 0) + d6_inc
+
+    if novo_nivel < 0 or novo_d6 < 0:
+        conn.close()
+        return await ctx.send("❌ Resultado inválido: nível ou d6 não podem ficar negativos.")
+
+    try:
+        cursor.execute("""UPDATE armas
+                          SET nivel = ?, d6 = ?
+                          WHERE user_id = ? AND nome_personagem = ? AND LOWER(item_nome) = ?""",
+                       (novo_nivel, novo_d6, str(membro.id), ativo, nome.lower()))
+        conn.commit()
+    except Exception as e:
+        conn.close()
+        return await ctx.send(f"❌ Erro ao atualizar arma: {e}")
+
+    conn.close()
+
+    emb = discord.Embed(title="⚔️ Arma Atualizada", color=discord.Color.dark_blue())
+    emb.add_field(name="👤 Jogador", value=f"{membro.display_name} ({ativo})", inline=False)
+    emb.add_field(name="🔧 Arma", value=f"**{nome}**", inline=False)
+    emb.add_field(name="📈 Antes", value=f"Nível: **{nivel_atual}** | D6: **{d6_atual}**", inline=False)
+    emb.add_field(name="📈 Agora", value=f"Nível: **{novo_nivel}** | D6: **{novo_d6}**", inline=False)
+    emb.set_footer(text="Use com cuidado — alterações são permanentes no banco de dados.")
+    await ctx.send(embed=emb)
+
+
+
+@bot.command(name="upararmadura")
+async def upararmadura(ctx, *args):
+    """
+    Atualiza armadura existente. Formatos aceitos:
+      !upararmadura "Nome da Armadura" nivel_inc d6_inc bonus_esq_inc bonus_vel_inc
+      !upararmadura @Jogador "Nome da Armadura" nivel_inc d6_inc bonus_esq_inc bonus_vel_inc
+    """
+    # args parsing flexível
+    if not args:
+        return await ctx.send("❌ Uso: `!upararmadura \"Nome\" nivel_inc d6_inc bonus_esq_inc bonus_vel_inc`")
+
+    # tenta detectar se o primeiro arg é uma menção de membro
+    membro = None
+    nome = None
+    rest = []
+
+    # se houver menções explícitas no ctx, prioriza a primeira menção
+    if ctx.message.mentions:
+        membro = ctx.message.mentions[0]
+        # remove a menção do texto bruto para extrair o restante corretamente
+        raw = ctx.message.content
+        # pega tudo após o comando e a menção
+        after = raw.split(maxsplit=2)[-1] if len(raw.split()) >= 2 else ""
+        # tenta extrair nome entre aspas e os números
+        # fallback simples: reconstruir args sem a primeira token de menção
+        tokens = list(args)[1:]
+    else:
+        # sem menção: assume que o primeiro arg é o nome (possivelmente entre aspas)
+        tokens = list(args)
+
+    # Reconstrói nome se estiver entre aspas (suporta nomes com espaços)
+    if tokens:
+        # se o primeiro token começa com aspas, junta até fechar aspas
+        if tokens[0].startswith('"') or tokens[0].startswith("'"):
+            quote = tokens[0][0]
+            nome_parts = []
+            consumed = 0
+            for t in tokens:
+                nome_parts.append(t)
+                consumed += 1
+                if t.endswith(quote) and len(t) > 1:
+                    break
+            nome = " ".join(nome_parts).strip(quote).strip()
+            rest = tokens[consumed:]
+        else:
+            # se não tem aspas, pega o primeiro token como nome simples
+            nome = tokens[0]
+            rest = tokens[1:]
+    else:
+        return await ctx.send("❌ Nome da armadura não informado.")
+
+    # se membro não foi definido via menção, atualiza do autor
+    if membro is None:
+        membro = ctx.author
+    else:
+        # se tentou atualizar armadura de outro, exige permissão de administrador
+        if membro != ctx.author and not ctx.author.guild_permissions.administrator:
+            return await ctx.send("🔒 Você não tem permissão para atualizar a armadura de outro jogador.")
+
+    # parse dos incrementos (preenche com zeros se faltarem)
+    try:
+        nivel_inc = int(rest[0]) if len(rest) >= 1 else 0
+        d6_inc = int(rest[1]) if len(rest) >= 2 else 0
+        bonus_esq_inc = int(rest[2]) if len(rest) >= 3 else 0
+        bonus_vel_inc = int(rest[3]) if len(rest) >= 4 else 0
+    except ValueError:
+        return await ctx.send("❌ Argumento inválido. Use números inteiros para os incrementos. Veja `!helpdados`.")
+
+    ativo = get_ativo(membro.id)
+    if not ativo:
+        return await ctx.send(f"❌ {membro.display_name} não tem um personagem ativo.")
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT nivel, d6, bonus_esquiva, bonus_velocidade FROM armaduras WHERE user_id = ? AND nome_personagem = ? AND LOWER(item_nome) = ?",
+        (str(membro.id), ativo, nome.lower())
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return await ctx.send(f"❌ Armadura **{nome}** não encontrada para o personagem **{ativo}** de {membro.display_name}.")
+
+    nivel_atual, d6_atual, bonus_esq_atual, bonus_vel_atual = row
+    novo_nivel = (nivel_atual or 0) + nivel_inc
+    novo_d6 = (d6_atual or 0) + d6_inc
+    novo_bonus_esq = (bonus_esq_atual or 0) + bonus_esq_inc
+    novo_bonus_vel = (bonus_vel_atual or 0) + bonus_vel_inc
+
+    if novo_nivel < 0 or novo_d6 < 0:
+        conn.close()
+        return await ctx.send("❌ Resultado inválido: nível ou d6 não podem ficar negativos.")
+
+    try:
+        cursor.execute("""UPDATE armaduras
+                          SET nivel = ?, d6 = ?, bonus_esquiva = ?, bonus_velocidade = ?
+                          WHERE user_id = ? AND nome_personagem = ? AND LOWER(item_nome) = ?""",
+                       (novo_nivel, novo_d6, novo_bonus_esq, novo_bonus_vel, str(membro.id), ativo, nome.lower()))
+        conn.commit()
+    except Exception as e:
+        conn.close()
+        return await ctx.send(f"❌ Erro ao atualizar armadura: {e}")
+
+    conn.close()
+
+    emb = discord.Embed(title="🛡️ Armadura Atualizada", color=discord.Color.dark_blue())
+    emb.add_field(name="👤 Jogador", value=f"{membro.display_name} ({ativo})", inline=False)
+    emb.add_field(name="🔧 Armadura", value=f"**{nome}**", inline=False)
+    emb.add_field(name="📈 Antes", value=f"Nível: **{nivel_atual}** | D6: **{d6_atual}** | +Esq: **{bonus_esq_atual}** | +Vel: **{bonus_vel_atual}**", inline=False)
+    emb.add_field(name="📈 Agora", value=f"Nível: **{novo_nivel}** | D6: **{novo_d6}** | +Esq: **{novo_bonus_esq}** | +Vel: **{novo_bonus_vel}**", inline=False)
+    emb.set_footer(text="Use com cuidado — alterações são permanentes no banco de dados.")
+    await ctx.send(embed=emb)
+
+
 # ----------------------------
 # Equipamento: adicionar / remover armas e armaduras
 # ----------------------------
@@ -1404,4 +1661,4 @@ async def on_ready():
     print(f'✅ Bot RPG {bot.user} online e completo!')
 
 # Substitua pelo seu token real antes de rodar
-bot.run('bot_token')
+bot.run('bot token')
